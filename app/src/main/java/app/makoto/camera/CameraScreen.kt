@@ -5,6 +5,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -84,6 +87,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
     var front by remember { mutableStateOf(false) }
     var flash by remember { mutableStateOf("off") }
     var stamp by remember { mutableStateOf(true) }
+    var ratio by remember { mutableStateOf("4:3") }
     var busy by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -94,6 +98,14 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
     var evStep by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
+
+    // 比率。1:1 は 4:3 で撮って中央を切り出す
+    LaunchedEffect(ratio) {
+        val strategy = if (ratio == "16:9") AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+        val selector = ResolutionSelector.Builder().setAspectRatioStrategy(strategy).build()
+        controller.imageCaptureResolutionSelector = selector
+        controller.previewResolutionSelector = selector
+    }
 
     // カメラが準備できたら、露出補正の範囲を読む
     LaunchedEffect(zoomState != null, front) {
@@ -115,7 +127,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
         if (busy) return
         busy = true
         val loc = tracker.last
-        val settings = ShotSettings(stamp, front, zoomState?.zoomRatio ?: 1f, evIndex * evStep, flash)
+        val settings = ShotSettings(stamp, front, zoomState?.zoomRatio ?: 1f, evIndex * evStep, flash, ratio)
         controller.takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 val buffer = image.planes[0].buffer
@@ -171,12 +183,13 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
         Spacer(Modifier.size(8.dp))
 
         // プレビュー
-        Box(modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Black)) {
+        Box(modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Black), contentAlignment = Alignment.Center) {
+          Box(modifier = Modifier.aspectRatio(when (ratio) { "16:9" -> 9f / 16f; "1:1" -> 1f; else -> 3f / 4f }).clip(androidx.compose.foundation.shape.RoundedCornerShape(0.dp))) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     PreviewView(ctx).apply {
-                        scaleType = PreviewView.ScaleType.FIT_CENTER
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
                         this.controller = controller
                     }
                 }
@@ -205,6 +218,16 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     Text("署名と透かしを記録中", color = Palette.Text, fontSize = 13.sp)
                 }
+            }
+          }
+        }
+
+        // 比率
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("比率", color = Palette.Sub, fontSize = 12.sp, modifier = Modifier.width(48.dp))
+            for (r in listOf("4:3", "16:9", "1:1")) {
+                Chip(r, selected = ratio == r, enabled = !busy) { ratio = r }
+                Spacer(Modifier.width(8.dp))
             }
         }
 

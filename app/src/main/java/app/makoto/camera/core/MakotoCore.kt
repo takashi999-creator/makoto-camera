@@ -12,6 +12,7 @@ import java.security.spec.X509EncodedKeySpec
  *                   模様の向き(+/-)で 64bit (撮影ID 48bit + CRC16) を繰り返し埋める。
  *                   セルは画像サイズに比例するので、縮小や再圧縮後も読める。
  *                   埋める前に元画像を調べ、絵柄に負けそうなビットだけ模様を少し強くする。
+ *                   空や壁のような平らな場所は模様が目立つので、そこでは模様を弱くする。
  * 2. 署名付き記録 : JPEG の APP11 セグメントに「記録(JSON) + ECDSA署名 + 公開鍵」を入れる。
  *                   記録には、このセグメントと Exif(APP1) を除いたファイル全体の SHA-256 が入る。
  *                   Exif を除くのは、OS が写真を渡すときに位置情報を伏せることがあるため。
@@ -25,10 +26,12 @@ object Spec {
     const val AMP_MIN = 3.0      // 透かしの振幅(輝度)。ビットごとに AMP_MIN〜AMP_MAX で決める
     const val AMP_MAX = 6.0
     const val CLIP = 6.0         // 検出時、セルごとの推定値をこの範囲に切り詰める
-    const val MARGIN = 2.0       // 埋め込み時に確保するビットごとの平均余裕
+    const val MARGIN = 1.3       // 埋め込み時に確保するビットごとの平均余裕
+    const val FLAT_FACTOR = 0.3  // 平らなセルでの振幅の倍率(最小)
+    const val TEXTURE_STD = 10.0 // セル内の輝度のばらつきがこれ以上なら、振幅を弱めない
     const val MAP = 32           // 変化マップのマス数(縦横)
     const val MAP_THRESHOLD = 8  // これ以上平均輝度が違うマスを「変化あり」とする
-    const val MIN_STRENGTH = 0.7 // 透かし検出の最低強度
+    const val MIN_STRENGTH = 0.5 // 透かし検出の最低強度
     val MAGIC: ByteArray = byteArrayOf(0x4D, 0x41, 0x4B, 0x4F, 0x54, 0x4F, 0x31, 0x00) // "MAKOTO1\0"
     const val APP_NAME = "マコトカメラ"
 }
@@ -82,23 +85,37 @@ object WmMath {
         return vote
     }
 
-    /** 元画像のセル推定値から、ビットごとの振幅を決める(絵柄に負けそうなビットだけ強くする) */
-    fun planAmplitudes(hostEst: DoubleArray, id: Long): FloatArray {
+    /** セル内の輝度のばらつきから、振幅の倍率を決める(平らな場所ほど弱く) */
+    fun cellFactor(activity: Double): Double {
+        val f = activity / Spec.TEXTURE_STD
+        return if (f < Spec.FLAT_FACTOR) Spec.FLAT_FACTOR else if (f > 1.0) 1.0 else f
+    }
+
+    /**
+     * 元画像のセル推定値とばらつきから、セルごとの模様(符号付きの振幅)を決める。
+     * 絵柄に負けそうなビットだけ強くし、平らなセルでは弱くする。
+     */
+    fun planCells(hostEst: DoubleArray, activity: DoubleArray, id: Long): FloatArray {
         val bits = payload(id)
         val reps = Spec.GRID * Spec.GRID / Spec.BITS
-        val amp = FloatArray(Spec.BITS) { Spec.AMP_MAX.toFloat() }
+        val n = Spec.GRID * Spec.GRID
+        val unit = DoubleArray(n) { i -> cellFactor(activity[i]) * cellSign(i) * (if (bits[cellBit(i)]) 1 else -1) }
+        val amp = DoubleArray(Spec.BITS) { Spec.AMP_MAX }
         var a = Spec.AMP_MIN
         val todo = BooleanArray(Spec.BITS) { true }
         while (a <= Spec.AMP_MAX + 1e-9) {
-            val v = votes(hostEst) { i -> a * cellSign(i) * (if (bits[cellBit(i)]) 1 else -1) }
+            val v = votes(hostEst) { i -> a * unit[i] }
             for (k in 0 until Spec.BITS) if (todo[k]) {
                 val m = (if (bits[k]) v[k] else -v[k]) / reps
-                if (m >= Spec.MARGIN) { amp[k] = a.toFloat(); todo[k] = false }
+                if (m >= Spec.MARGIN) { amp[k] = a; todo[k] = false }
             }
             a += 0.5
         }
-        return amp
+        return FloatArray(n) { i -> (amp[cellBit(i)] * unit[i]).toFloat() }
     }
+
+    /** 小数の振幅を整数の画素に散らすための 4x4 の表(0〜15) */
+    val DITHER = intArrayOf(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
 
     /** 32bit 整数のあふれを使う(Swift では &* と &+ を UInt32 で使う) */
     fun cellSign(idx: Int): Int {
@@ -119,24 +136,21 @@ object WmMath {
 }
 
 /** 画像を帯(strip)ごとに渡して透かしを埋める。pixels は ARGB。 */
-class WatermarkEmbedder(private val w: Int, private val h: Int, id: Long, amp: FloatArray) {
+class WatermarkEmbedder(private val w: Int, private val h: Int, private val t: FloatArray) {
     private val cx = IntArray(w); private val sx = FloatArray(w)
     private val cy = IntArray(h); private val sy = FloatArray(h)
-    private val t = FloatArray(Spec.GRID * Spec.GRID)
 
-    init {
-        WmMath.axis(w, cx, sx); WmMath.axis(h, cy, sy)
-        val bits = WmMath.payload(id)
-        for (i in t.indices) { val k = WmMath.cellBit(i); t[i] = amp[k] * WmMath.cellSign(i) * (if (bits[k]) 1 else -1) }
-    }
+    init { WmMath.axis(w, cx, sx); WmMath.axis(h, cy, sy) }
 
     fun apply(strip: IntArray, y0: Int, rows: Int) {
         var p = 0
         for (y in y0 until y0 + rows) {
             val rowCell = cy[y] * Spec.GRID
             val wy = sy[y]
+            val drow = (y and 3) * 4
             for (x in 0 until w) {
-                val d = Math.round(t[rowCell + cx[x]] * sx[x] * wy)
+                // 小数部分は 4x4 の表で散らす(平均すると元の小数の値になる)
+                val d = Math.floor((t[rowCell + cx[x]] * sx[x] * wy + (WmMath.DITHER[drow + (x and 3)] + 0.5f) / 16f).toDouble()).toInt()
                 if (d != 0) {
                     val c = strip[p]
                     var r = ((c ushr 16) and 0xFF) + d
@@ -165,6 +179,9 @@ class ImageAnalyzer(private val w: Int, private val h: Int) {
     private val norm = DoubleArray(Spec.GRID * Spec.GRID)
     private val mapSum = LongArray(Spec.MAP * Spec.MAP)
     private val mapCnt = IntArray(Spec.MAP * Spec.MAP)
+    private val lumSum = DoubleArray(Spec.GRID * Spec.GRID)
+    private val lumSq = DoubleArray(Spec.GRID * Spec.GRID)
+    private val lumCnt = IntArray(Spec.GRID * Spec.GRID)
     private val mx = IntArray(w) { minOf(Spec.MAP - 1, (it.toLong() * Spec.MAP / w).toInt()) }
 
     init { WmMath.axis(w, cx, sx); WmMath.axis(h, cy, sy) }
@@ -182,6 +199,7 @@ class ImageAnalyzer(private val w: Int, private val h: Int) {
                 val i = rowCell + cx[x]
                 acc[i] += (l * k).toDouble()
                 norm[i] += (k * k).toDouble()
+                lumSum[i] += l.toDouble(); lumSq[i] += (l * l).toDouble(); lumCnt[i]++
                 val m = mrow + mx[x]
                 mapSum[m] += l.toLong(); mapCnt[m]++
             }
@@ -190,6 +208,14 @@ class ImageAnalyzer(private val w: Int, private val h: Int) {
 
     /** セルごとの模様の強さの推定値(画素がないセルは NaN) */
     fun cellEstimates(): DoubleArray = DoubleArray(acc.size) { i -> if (norm[i] > 0.0) acc[i] / norm[i] else Double.NaN }
+
+    /** セルごとの輝度のばらつき(標準偏差) */
+    fun cellActivity(): DoubleArray = DoubleArray(acc.size) { i ->
+        if (lumCnt[i] == 0) 0.0 else {
+            val m = lumSum[i] / lumCnt[i]
+            Math.sqrt(Math.max(0.0, lumSq[i] / lumCnt[i] - m * m))
+        }
+    }
 
     fun watermark(): WatermarkResult {
         val vote = WmMath.votes(cellEstimates(), null)

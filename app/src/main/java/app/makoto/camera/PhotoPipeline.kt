@@ -26,7 +26,8 @@ class ShotSettings(
     val frontLens: Boolean,
     val zoom: Float,
     val ev: Float,           // 露出補正(EV)
-    val flash: String        // off / auto / on
+    val flash: String,       // off / auto / on
+    val ratio: String        // 4:3 / 16:9 / 1:1
 )
 
 class SavedShot(val uri: Uri, val idHex: String)
@@ -43,6 +44,13 @@ object PhotoPipeline {
 
         // 1. デコードして正しい向きに回す(向きを画素に焼き込むと、再保存後も透かしが読める)
         var bmp = decodeUpright(captured, rotationDegrees)
+        if (s.ratio == "1:1" && bmp.width != bmp.height) {
+            // 1:1 は 4:3 で撮って中央を正方形に切り出す
+            val side = Math.min(bmp.width, bmp.height)
+            val sq = Bitmap.createBitmap(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side)
+            if (sq !== bmp) bmp.recycle()
+            bmp = if (sq.isMutable) sq else sq.copy(Bitmap.Config.ARGB_8888, true).also { sq.recycle() }
+        }
         val w = bmp.width
         val h = bmp.height
 
@@ -53,7 +61,7 @@ object PhotoPipeline {
         val buf = IntArray(w * STRIP)
         val host = ImageAnalyzer(w, h)
         forStrips(h) { y, n -> bmp.getPixels(buf, 0, w, 0, y, w, n); host.feed(buf, y, n) }
-        val embedder = WatermarkEmbedder(w, h, id, WmMath.planAmplitudes(host.cellEstimates(), id))
+        val embedder = WatermarkEmbedder(w, h, WmMath.planCells(host.cellEstimates(), host.cellActivity(), id))
         val marked = ImageAnalyzer(w, h)
         forStrips(h) { y, n ->
             bmp.getPixels(buf, 0, w, 0, y, w, n)
@@ -93,6 +101,7 @@ object PhotoPipeline {
         f["ev"] = s.ev
         f["flash"] = s.flash
         f["stamp"] = s.stamp
+        f["ratio"] = s.ratio
         f["w"] = w
         f["h"] = h
         f["map"] = Base64.encodeToString(marked.map(), Base64.NO_WRAP)

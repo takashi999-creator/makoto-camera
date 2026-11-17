@@ -227,6 +227,7 @@ private fun detailRows(r: VerifyResult, ownKeyId: String?): List<Pair<String, St
     val flash = when (f["flash"]) { "auto" -> "自動"; "on" -> "入"; else -> "切" }
     out.add("撮影設定" to lens + " / ズーム " + (f["zoom"]?.toDoubleOrNull()?.let { String.format(java.util.Locale.US, "%.1fx", it) } ?: "-") +
         " / 明るさ " + (f["ev"]?.toDoubleOrNull()?.let { String.format(java.util.Locale.US, "%+.1f", it) } ?: "-") + " / フラッシュ " + flash)
+    f["ratio"]?.let { out.add("比率" to it) }
     out.add("画面の表示" to if (f["stamp"] == "true") "あり" else "なし")
     f["shotId"]?.let { out.add("撮影ID" to it) }
     r.keyId?.let { out.add("署名した端末" to it + if (ownKeyId != null && ownKeyId == it) "(この端末)" else "(他の端末)") }
