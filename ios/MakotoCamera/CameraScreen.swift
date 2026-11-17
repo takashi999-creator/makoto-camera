@@ -175,38 +175,8 @@ struct CameraScreen: View {
     }
 
     /// QR の簡易確認の結果
-    @ViewBuilder private var scanPanel: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let s = camera.scanned {
-                let own = ownDeviceId()
-                let name = TrustStore.name(for: s.keyId)
-                let isOwn = own != nil && own == s.keyId
-                let good = s.valid && (name != nil || isOwn)
-                Text(!s.valid ? "QR の署名が合いません(偽造または破損)" : (good ? "署名を確認しました" : "署名は正しいですが、未登録の端末です"))
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(!s.valid ? Palette.bad : (good ? Palette.ok : Palette.warn))
-                if s.valid {
-                    Text("撮影日時  " + s.timeJst.replacingOccurrences(of: "T", with: " ").replacingOccurrences(of: "+09:00", with: "") + "(日本時間)")
-                    if let la = s.lat, let lo = s.lon { Text("場所  " + Format.latLon(la, lo)) } else { Text("場所  記録なし") }
-                    if let a = s.alt { Text(String(format: "標高  %.1f m", a)) }
-                    Text("端末  " + prettyId(s.keyId) + "(" + (isOwn ? "この端末" : (name.map { "登録済み: " + $0 } ?? "未登録の端末")) + ")")
-                    Text("撮影ID  " + s.shotId)
-                    Text("簡易確認です。QR は複製できるため、写真が原本かどうかはファイルを「写真を判定」で確認してください。")
-                        .font(.system(size: 11)).foregroundColor(Palette.sub)
-                }
-            } else {
-                Text("QR の簡易確認").font(.system(size: 14, weight: .semibold))
-                Text("マコトカメラの写真に入っている QR にかざしてください。").foregroundColor(Palette.sub)
-                if let l = camera.autoEvLabel { Text("明るさを自動で調整しながら探しています(\(l))").foregroundColor(Palette.sub) }
-            }
-        }
-        .font(.system(size: 12))
-        .foregroundColor(Palette.text)
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.panel.opacity(0.92))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(8)
+    private var scanPanel: some View {
+        ScanPanel(info: camera.scanned, autoEvLabel: camera.autoEvLabel)
     }
 
     private var locationStatus: String {
@@ -220,5 +190,80 @@ struct CameraScreen: View {
         if camera.minZoom < 0.95 { out.append(camera.minZoom) }
         for z in [CGFloat(1), 2, 5, 10] where z <= camera.maxZoom + 0.01 { out.append(z) }
         return out
+    }
+}
+
+/// QR の簡易確認の結果(型の推論を軽くするため、文字列を先に作ってから並べる)
+private struct ScanPanel: View {
+    let info: QrInfo?
+    let autoEvLabel: String?
+
+    private var title: String {
+        guard let s = info else { return "QR の簡易確認" }
+        if !s.valid { return "QR の署名が合いません(偽造または破損)" }
+        return trusted ? "署名を確認しました" : "署名は正しいですが、未登録の端末です"
+    }
+
+    private var titleColor: Color {
+        guard let s = info else { return Palette.text }
+        if !s.valid { return Palette.bad }
+        return trusted ? Palette.ok : Palette.warn
+    }
+
+    private var isOwn: Bool {
+        guard let s = info, let own = ownDeviceId() else { return false }
+        return own == s.keyId
+    }
+
+    private var trusted: Bool {
+        guard let s = info else { return false }
+        return isOwn || TrustStore.name(for: s.keyId) != nil
+    }
+
+    private var lines: [String] {
+        guard let s = info else {
+            var out = ["マコトカメラの写真に入っている QR にかざしてください。"]
+            if let l = autoEvLabel { out.append("明るさを自動で調整しながら探しています(" + l + ")") }
+            return out
+        }
+        if !s.valid { return [] }
+        var out: [String] = []
+        let time = s.timeJst.replacingOccurrences(of: "T", with: " ").replacingOccurrences(of: "+09:00", with: "")
+        out.append("撮影日時  " + time + "(日本時間)")
+        if let la = s.lat, let lo = s.lon {
+            out.append("場所  " + Format.latLon(la, lo))
+        } else {
+            out.append("場所  記録なし")
+        }
+        if let a = s.alt { out.append(String(format: "標高  %.1f m", a)) }
+        let who: String
+        if isOwn {
+            who = "この端末"
+        } else if let n = TrustStore.name(for: s.keyId) {
+            who = "登録済み: " + n
+        } else {
+            who = "未登録の端末"
+        }
+        out.append("端末  " + prettyId(s.keyId) + "(" + who + ")")
+        out.append("撮影ID  " + s.shotId)
+        return out
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 14, weight: .semibold)).foregroundColor(titleColor)
+            ForEach(lines, id: \.self) { line in
+                Text(line).font(.system(size: 12)).foregroundColor(info == nil ? Palette.sub : Palette.text)
+            }
+            if info?.valid == true {
+                Text("簡易確認です。QR は複製できるため、写真が原本かどうかはファイルを「写真を判定」で確認してください。")
+                    .font(.system(size: 11)).foregroundColor(Palette.sub)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.panel.opacity(0.92))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(8)
     }
 }
