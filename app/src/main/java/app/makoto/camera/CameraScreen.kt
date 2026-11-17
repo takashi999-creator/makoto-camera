@@ -6,7 +6,9 @@ import android.widget.Toast
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import app.makoto.camera.core.QrInfo
 import com.google.zxing.PlanarYUVLuminanceSource
 import java.util.concurrent.Executors
@@ -61,6 +63,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -140,6 +143,40 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
     var evMin by remember { mutableIntStateOf(0) }
     var evMax by remember { mutableIntStateOf(0) }
     var evStep by remember { mutableFloatStateOf(0f) }
+
+    // QR の簡易確認中は、画面や白い紙で白飛びして読めないことがあるので、
+    // 中央に明るさとピントを合わせ、読めるまで明るさを自動で上下させる。終わったら元に戻す。
+    var autoEvLabel by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(scanning) {
+        if (!scanning) return@LaunchedEffect
+        val saved = evIndex
+        try {
+            try {
+                val point = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
+                controller.cameraControl?.startFocusAndMetering(FocusMeteringAction.Builder(point).disableAutoCancel().build())
+            } catch (e: Exception) { }
+            if (evMax > evMin && evStep > 0f) {
+                val perEv = Math.max(1, Math.round(1f / evStep))
+                // 暗い側を優先して試す(画面の QR は明るすぎることが多い)
+                val seq = listOf(-1, -2, -3, 0, 1).map { (it * perEv).coerceIn(evMin, evMax) }.distinct()
+                var k = 0
+                while (scanned == null) {
+                    val i = seq[k % seq.size]
+                    controller.cameraControl?.setExposureCompensationIndex(i)
+                    autoEvLabel = String.format(Locale.US, "%+.1f", i * evStep)
+                    delay(1200)
+                    k++
+                }
+            }
+            awaitCancellation()
+        } finally {
+            autoEvLabel = null
+            try {
+                controller.cameraControl?.cancelFocusAndMetering()
+                controller.cameraControl?.setExposureCompensationIndex(saved)
+            } catch (e: Exception) { }
+        }
+    }
 
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
 
@@ -277,6 +314,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
                     if (s == null) {
                         Text("QR の簡易確認", color = Palette.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                         Text("マコトカメラの写真に入っている QR にかざしてください。", color = Palette.Sub, fontSize = 12.sp)
+                        autoEvLabel?.let { Text("明るさを自動で調整しながら探しています(" + it + ")", color = Palette.Sub, fontSize = 12.sp) }
                     } else {
                         val own = remember { ownDeviceId() }
                         val name = TrustStore.nameFor(context, s.keyId)
