@@ -1,0 +1,27 @@
+name: iOS build check
+
+# iPhone 版がビルドできるかだけを確かめる(署名なし、シミュレータ向け)。
+# ios/ を変えたときだけ動く。macOS の実行時間は Linux より多く数えられるため。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Build for simulator (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/MakotoCamera.xcodeproj -target MakotoCamera \
+            -sdk iphonesimulator -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee build.log | grep -E "error:|warning: .*(deprecated|never)|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log

@@ -70,3 +70,15 @@ Info の設定に `NSCameraUsageDescription`、`NSLocationWhenInUseUsageDescript
 - 写真は sRGB の JPEG(画質 95)で保存します。HEIF や RAW には対応していません。
 - Android の標高は、Android 14 以降で平均海面からの高さ、それより前は楕円体高(数十 m ずれることがある)です。
 - 「マコトカメラ」の名前は商標とストアでの重複を未確認です。
+
+
+## iPhone 版(`ios` フォルダ)
+
+Android 版と同じ機能(比率、QR、かざして簡易確認、端末登録、元写真の検索、他のアプリから開いて判定)を入れています。
+写真の形式は共通なので、Android で撮った写真を iPhone で、iPhone で撮った写真を Android で判定できます。
+
+- `ios/` を変更して GitHub に入れると、Mac 環境で自動的にビルドの確認が走ります(Actions の「iOS build check」)。
+  これはビルドできるかの確認だけで、iPhone に入れるファイルは作りません。
+- iPhone に入れるには、Mac と Xcode が必要です(手順は上の「iPhone」を参照)。
+- iPhone では、メールの添付やファイルアプリの写真を「共有」→「マコトカメラ」で判定できます。
+  写真アプリや LINE の共有一覧には出ないことがあるので、その場合はアプリの「写真から」で選んでください。
