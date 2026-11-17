@@ -53,9 +53,9 @@ object Stamp {
         val u = Math.min(w, h) / 36f              // 基準の文字サイズ
         val pad = u * 0.8f
         val ls = lines(timeMs, loc)
-        // QR を入れるときは、読み取れる大きさ(短辺の 22%)を確保するため帯を高くする
+        // QR を入れるときは、読み取れる大きさ(短辺の 30%)を確保するため帯を高くする
         val qr = qrText?.let { try { QrCode.matrix(it) } catch (e: Exception) { null } }
-        val qrSide = if (qr != null) Math.min(w, h) * 0.22f else 0f
+        val qrSide = if (qr != null) Math.min(w, h) * 0.30f else 0f
         val bandH = Math.max(pad * 2 + u * 1.35f * (ls.size + 1), if (qr != null) qrSide + pad * 2 else 0f)
 
         val band = Paint().apply { color = 0x990E141B.toInt() }

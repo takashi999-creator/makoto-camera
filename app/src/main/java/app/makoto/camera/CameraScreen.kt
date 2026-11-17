@@ -12,6 +12,7 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import java.util.concurrent.Executors
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
@@ -102,6 +103,10 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
     DisposableEffect(Unit) { onDispose { scanExecutor.shutdown() } }
     DisposableEffect(scanning) {
         if (scanning) {
+            // 既定の解像度(640x480)では細かい QR を読めないので、高い解像度で解析する
+            controller.imageAnalysisResolutionSelector = ResolutionSelector.Builder()
+                .setResolutionStrategy(ResolutionStrategy(android.util.Size(1920, 1440), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                .build()
             controller.setEnabledUseCases(CameraController.IMAGE_CAPTURE or CameraController.IMAGE_ANALYSIS)
             controller.setImageAnalysisAnalyzer(scanExecutor) { image ->
                 try {

@@ -551,37 +551,106 @@ class QrInfo(
     val keyId: String
 )
 
+/** P-256 の公開鍵と署名を短い形にする(QR を小さくするため) */
+object P256 {
+    private val P = java.math.BigInteger("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF", 16)
+    private val B = java.math.BigInteger("5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B", 16)
+
+    private fun fixed(v: java.math.BigInteger, n: Int): ByteArray {
+        val raw = v.toByteArray()
+        val out = ByteArray(n)
+        val len = Math.min(n, raw.size)
+        System.arraycopy(raw, raw.size - len, out, n - len, len)
+        return out
+    }
+
+    /** 65 バイト(04||X||Y)→ 33 バイト(02/03||X) */
+    fun compress(pub: ByteArray): ByteArray {
+        require(pub.size == 65 && pub[0].toInt() == 4)
+        val out = ByteArray(33)
+        out[0] = (2 + (pub[64].toInt() and 1)).toByte()
+        System.arraycopy(pub, 1, out, 1, 32)
+        return out
+    }
+
+    /** 33 バイト → 65 バイト。y^2 = x^3 - 3x + b (mod p) を解く */
+    fun decompress(c: ByteArray): ByteArray {
+        require(c.size == 33 && (c[0].toInt() == 2 || c[0].toInt() == 3))
+        val x = java.math.BigInteger(1, c.copyOfRange(1, 33))
+        val rhs = x.pow(3).subtract(x.multiply(java.math.BigInteger.valueOf(3))).add(B).mod(P)
+        var y = rhs.modPow(P.add(java.math.BigInteger.ONE).shiftRight(2), P)
+        require(y.multiply(y).mod(P) == rhs)
+        if (y.testBit(0) != (c[0].toInt() == 3)) y = P.subtract(y)
+        return byteArrayOf(4) + fixed(x, 32) + fixed(y, 32)
+    }
+
+    /** DER 形式の署名 → 64 バイト(r||s) */
+    fun derToRaw(der: ByteArray): ByteArray {
+        var o = 2
+        if ((der[1].toInt() and 0x80) != 0) o += der[1].toInt() and 0x7F
+        fun int(): java.math.BigInteger {
+            require(der[o].toInt() == 2)
+            val len = der[o + 1].toInt() and 0xFF
+            val v = java.math.BigInteger(1, der.copyOfRange(o + 2, o + 2 + len))
+            o += 2 + len
+            return v
+        }
+        val r = int(); val sv = int()
+        return fixed(r, 32) + fixed(sv, 32)
+    }
+
+    /** 64 バイト(r||s)→ DER 形式の署名 */
+    fun rawToDer(raw: ByteArray): ByteArray {
+        require(raw.size == 64)
+        fun enc(b: ByteArray): ByteArray {
+            val v = java.math.BigInteger(1, b).toByteArray()
+            return byteArrayOf(2, v.size.toByte()) + v
+        }
+        val body = enc(raw.copyOfRange(0, 32)) + enc(raw.copyOfRange(32, 64))
+        return byteArrayOf(0x30, body.size.toByte()) + body
+    }
+}
+
 /**
- * QR の中身: MK1|撮影ID|日時|緯度|経度|標高|公開鍵|署名
- * 署名は「署名」より前の文字列全体に対するもの。QR は複製できるので、写真本体の証明には
- * 透かしの撮影ID との一致を別に確かめること。
+ * QR の中身(v2): MK2|撮影ID(6バイト)|撮影時刻(秒, 36進)|緯度|経度|標高|公開鍵(圧縮33バイト)|署名(64バイト)
+ * バイト列は URL 用 Base64。署名は「署名」より前の文字列全体に対するもの。
+ * QR は複製できるので、写真本体の証明には透かしの撮影ID との一致を別に確かめること。
+ * (v1 の MK1 形式も読める)
  */
 object QrPayload {
-    const val PREFIX = "MK1"
-
-    fun build(shotId: String, timeJst: String, lat: Double?, lon: Double?, alt: Double?,
+    fun build(shotIdBytes: ByteArray, timeMs: Long, lat: Double?, lon: Double?, alt: Double?,
               sign: (ByteArray) -> ByteArray, publicKey: ByteArray, enc: (ByteArray) -> String): String {
         val us = java.util.Locale.US
         val head = listOf(
-            PREFIX, shotId, timeJst,
-            lat?.let { String.format(us, "%.6f", it) } ?: "",
-            lon?.let { String.format(us, "%.6f", it) } ?: "",
-            alt?.let { String.format(us, "%.1f", it) } ?: "",
-            enc(publicKey)
+            "MK2", enc(shotIdBytes), java.lang.Long.toString(timeMs / 1000, 36),
+            lat?.let { String.format(us, "%.5f", it) } ?: "",
+            lon?.let { String.format(us, "%.5f", it) } ?: "",
+            alt?.let { String.format(us, "%.0f", it) } ?: "",
+            enc(P256.compress(publicKey))
         ).joinToString("|")
-        return head + "|" + enc(sign(head.toByteArray(Charsets.UTF_8)))
+        return head + "|" + enc(P256.derToRaw(sign(head.toByteArray(Charsets.UTF_8))))
     }
 
     /** マコトカメラの QR でなければ null。 */
     fun parse(text: String, dec: (String) -> ByteArray): QrInfo? {
         val p = text.split("|")
-        if (p.size != 8 || p[0] != PREFIX) return null
+        if (p.size != 8) return null
         return try {
-            val pub = dec(p[6])
-            val sig = dec(p[7])
             val head = text.substringBeforeLast("|").toByteArray(Charsets.UTF_8)
-            val rec = Record(head, sig, pub)
-            QrInfo(rec.signatureValid(), p[1], p[2], p[3].toDoubleOrNull(), p[4].toDoubleOrNull(), p[5].toDoubleOrNull(), rec.keyId)
+            when (p[0]) {
+                "MK2" -> {
+                    val rec = Record(head, P256.rawToDer(dec(p[7])), P256.decompress(dec(p[6])))
+                    val f = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                    f.timeZone = java.util.TimeZone.getTimeZone("Asia/Tokyo")
+                    val time = f.format(java.util.Date(java.lang.Long.parseLong(p[2], 36) * 1000)) + "+09:00"
+                    QrInfo(rec.signatureValid(), dec(p[1]).toHex(), time, p[3].toDoubleOrNull(), p[4].toDoubleOrNull(), p[5].toDoubleOrNull(), rec.keyId)
+                }
+                "MK1" -> {
+                    val rec = Record(head, dec(p[7]), dec(p[6]))
+                    QrInfo(rec.signatureValid(), p[1], p[2], p[3].toDoubleOrNull(), p[4].toDoubleOrNull(), p[5].toDoubleOrNull(), rec.keyId)
+                }
+                else -> null
+            }
         } catch (e: Exception) { null }
     }
 }

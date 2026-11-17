@@ -75,6 +75,7 @@ private fun inspect(context: Context, uri: Uri): Checked {
 
     // 全画素を読んで、透かしと変化マップを調べる
     var analyzer: ImageAnalyzer? = null
+    var fullQr: String? = null
     val full = try {
         BitmapFactory.decodeByteArray(file, 0, file.size, BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 })
     } catch (e: Throwable) { null }
@@ -84,6 +85,15 @@ private fun inspect(context: Context, uri: Uri): Checked {
         val a = ImageAnalyzer(w, h)
         val buf = IntArray(w * PhotoPipeline.STRIP)
         PhotoPipeline.forStrips(h) { y, n -> full.getPixels(buf, 0, w, 0, y, w, n); a.feed(buf, y, n) }
+        // QR は下端の帯の右側にあるので、その周辺を元の解像度のまま読む
+        fullQr = try {
+            val x0 = w * 4 / 10
+            val y0 = h * 5 / 10
+            val crop = Bitmap.createBitmap(full, x0, y0, w - x0, h - y0)
+            val t = QrCode.read(crop)
+            if (crop !== full) crop.recycle()
+            t
+        } catch (e: Throwable) { null }
         full.recycle()
         analyzer = a
     }
@@ -99,7 +109,7 @@ private fun inspect(context: Context, uri: Uri): Checked {
 
     val result = Verifier.verify(file, analyzer, { RecordStore.load(context, it) }, { Base64.decode(it, Base64.DEFAULT) }, { RecordStore.all(context) })
     // 写真の中に見える QR があれば読む(縮小画像で足りる)
-    val qr = preview?.let { p -> try { QrCode.parse(QrCode.read(p)) } catch (e: Throwable) { null } }
+    val qr = QrCode.parse(fullQr) ?: preview?.let { p -> try { QrCode.parse(QrCode.read(p)) } catch (e: Throwable) { null } }
     return Checked(result, preview, ownDeviceId(), qr)
 }
 

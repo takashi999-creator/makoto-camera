@@ -60,7 +60,7 @@ object PhotoPipeline {
         val timeJst = Format.jst(timeMs, "yyyy-MM-dd'T'HH:mm:ss") + "+09:00"
         if (s.stamp) {
             val qrText = if (!s.qr) null else QrPayload.build(
-                idHex, timeJst, loc?.latitude, loc?.longitude, loc?.let { Format.altitude(it)?.first },
+                WmMath.idBytes(id), timeMs, loc?.latitude, loc?.longitude, loc?.let { Format.altitude(it)?.first },
                 { DeviceKey.sign(it) }, DeviceKey.publicKey(), { QrCode.enc(it) })
             Stamp.draw(bmp, timeMs, loc, qrText)
         }
