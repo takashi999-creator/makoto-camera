@@ -153,11 +153,14 @@ final class WatermarkEmbedder {
                 var p = px + y * bytesPerRow
                 for x in 0..<w {
                     // 小数部分は 4x4 の表で散らす(平均すると元の小数の値になる)
-                    let d = Int((t[rowCell + cx[x]] * sx[x] * wy + (dither[drow + (x & 3)] + 0.5) / 16).rounded(.down))
+                    let wave: Float = t[rowCell + cx[x]] * sx[x] * wy
+                    let offset: Float = (dither[drow + (x & 3)] + 0.5) / 16
+                    let d: Int = Int((wave + offset).rounded(.down))
                     if d != 0 {
-                        p[0] = UInt8(max(0, min(255, Int(p[0]) + d)))
-                        p[1] = UInt8(max(0, min(255, Int(p[1]) + d)))
-                        p[2] = UInt8(max(0, min(255, Int(p[2]) + d)))
+                        for c in 0..<3 {
+                            let v: Int = Int(p[c]) + d
+                            p[c] = UInt8(v < 0 ? 0 : (v > 255 ? 255 : v))
+                        }
                     }
                     p += 4
                 }
@@ -206,7 +209,10 @@ final class ImageAnalyzer {
                 let mrow = min(Spec.map - 1, y * Spec.map / h) * Spec.map
                 var p = px + y * bytesPerRow
                 for x in 0..<w {
-                    let l = (77 * Int(p[0]) + 150 * Int(p[1]) + 29 * Int(p[2])) >> 8
+                    let r0: Int = 77 * Int(p[0])
+                    let g0: Int = 150 * Int(p[1])
+                    let b0: Int = 29 * Int(p[2])
+                    let l: Int = (r0 + g0 + b0) >> 8
                     let k = sx[x] * wy
                     let i = rowCell + cx[x]
                     acc[i] += Double(Float(l) * k)
