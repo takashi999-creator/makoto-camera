@@ -11,6 +11,10 @@ object RecordStore {
         File(dir(c), "$idHex.bin").writeBytes(packed)
     }
 
+    /** すべての控え(新しい順) */
+    fun all(c: Context): List<ByteArray> =
+        (dir(c).listFiles() ?: emptyArray()).filter { it.name.endsWith(".bin") }.sortedByDescending { it.lastModified() }.map { it.readBytes() }
+
     fun load(c: Context, idHex: String): ByteArray? {
         if (!idHex.matches(Regex("[0-9a-f]{1,32}"))) return null
         val f = File(dir(c), "$idHex.bin")

@@ -441,7 +441,8 @@ enum class Verdict {
     EDITED,          // 記録は本物だが、画像が撮影後に変わっている
     FORGED_RECORD,   // 記録はあるが署名が合わない(偽造または破損)
     WATERMARK_ONLY,  // 記録は消えているが、透かしからこのアプリの写真と分かる(再保存・編集あり)
-    UNKNOWN          // 確認不能
+    SIMILAR_LOCAL,   // 記録も透かしもないが、この端末の控えに構図がよく似た写真がある(加工された可能性)
+    UNKNOWN          // 原本とは認められない(記録も透かしもない)
 }
 
 class VerifyResult(
@@ -464,13 +465,45 @@ object Verifier {
         Math.abs((a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF)) >= Spec.MAP_THRESHOLD
     }
 
+    /** 似ているとみなす、変化マスの割合の上限 */
+    const val SIMILAR_LIMIT = 0.30
+
+    /**
+     * 全体の明るさのずれ(中央値)を引いてから比べる。AI 加工や再保存で全体が少し明るく/暗くなっても、
+     * 変わった場所だけを拾うため。
+     */
+    fun diffNormalized(orig: ByteArray, now: ByteArray): BooleanArray {
+        val d = IntArray(orig.size) { i -> (now[i].toInt() and 0xFF) - (orig[i].toInt() and 0xFF) }
+        val med = d.sorted()[d.size / 2]
+        return BooleanArray(d.size) { i -> Math.abs(d[i] - med) >= Spec.MAP_THRESHOLD }
+    }
+
+    /** 控えの中から、構図が最も似ている写真を探す。見つからなければ null。 */
+    fun findSimilar(nowMap: ByteArray, records: List<ByteArray>, b64: (String) -> ByteArray): Pair<Record, BooleanArray>? {
+        var best: Record? = null
+        var bestDiff: BooleanArray? = null
+        var bestCount = Int.MAX_VALUE
+        for (packed in records) {
+            val rec = Record.unpack(packed) ?: continue
+            val orig = mapFromBase64(FlatJson.read(String(rec.manifest, Charsets.UTF_8))["map"], b64) ?: continue
+            val d = diffNormalized(orig, nowMap)
+            val c = d.count { it }
+            if (c < bestCount) { bestCount = c; best = rec; bestDiff = d }
+        }
+        val r = best ?: return null
+        if (bestCount > nowMap.size * SIMILAR_LIMIT || !r.signatureValid()) return null
+        return Pair(r, bestDiff!!)
+    }
+
     /**
      * @param file        判定するファイルのバイト列そのまま
      * @param analyzer    同じファイルをデコードして全画素を feed 済みのもの(デコードできなければ null)
      * @param localRecord 撮影IDから端末内の控え(pack 済み)を探す関数
      * @param b64         Base64 デコード関数(Android と JVM で実装が違うため外から渡す)
+     * @param allLocal    端末内の控えをすべて返す関数(記録も透かしもないときだけ呼ぶ)
      */
-    fun verify(file: ByteArray, analyzer: ImageAnalyzer?, localRecord: (String) -> ByteArray?, b64: (String) -> ByteArray): VerifyResult {
+    fun verify(file: ByteArray, analyzer: ImageAnalyzer?, localRecord: (String) -> ByteArray?, b64: (String) -> ByteArray,
+               allLocal: () -> List<ByteArray> = { emptyList() }): VerifyResult {
         val wm = analyzer?.watermark()
         val nowMap = analyzer?.map()
         val split = JpegContainer.split(file)
@@ -493,6 +526,13 @@ object Verifier {
                 return VerifyResult(Verdict.WATERMARK_ONLY, fields, local.keyId, wm, changed, true)
             }
             return VerifyResult(Verdict.WATERMARK_ONLY, emptyMap(), null, wm, null, false)
+        }
+        if (nowMap != null) {
+            val similar = findSimilar(nowMap, allLocal(), b64)
+            if (similar != null) {
+                val fields = FlatJson.read(String(similar.first.manifest, Charsets.UTF_8))
+                return VerifyResult(Verdict.SIMILAR_LOCAL, fields, similar.first.keyId, wm, similar.second, true)
+            }
         }
         return VerifyResult(Verdict.UNKNOWN, emptyMap(), null, wm, null, false)
     }

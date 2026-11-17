@@ -1,5 +1,7 @@
 package app.makoto.camera
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -89,6 +91,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
     var stamp by remember { mutableStateOf(true) }
     var ratio by remember { mutableStateOf("4:3") }
     var busy by remember { mutableStateOf(false) }
+    var lastShot by remember { mutableStateOf<Uri?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     // 明るさ(露出補正)
@@ -140,7 +143,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
                         runCatching { PhotoPipeline.process(context.applicationContext, bytes, rotation, loc, settings) }
                     }
                     busy = false
-                    if (result.isSuccess) toast("保存しました(撮影ID " + result.getOrThrow().idHex + ")")
+                    if (result.isSuccess) { lastShot = result.getOrThrow().uri; toast("保存しました(撮影ID " + result.getOrThrow().idHex + ")") }
                     else toast("保存に失敗しました: " + (result.exceptionOrNull()?.message ?: ""))
                 }
             }
@@ -179,7 +182,21 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
             loc == null -> "位置情報: 取得中"
             else -> String.format(Locale.US, "位置情報: 取得済み(誤差 約%.0f m)", loc.accuracy)
         }
-        Text(status, color = if (loc != null) Palette.Sub else Palette.Warn, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(status, color = if (loc != null) Palette.Sub else Palette.Warn, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            // 直前に撮った写真を、ファイルのまま(原本のまま)他のアプリへ渡す
+            val shot = lastShot
+            if (shot != null) {
+                Chip("直前の写真を送る") {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "image/jpeg"
+                        putExtra(Intent.EXTRA_STREAM, shot)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(send, "原本を送る(メールの添付がおすすめ)"))
+                }
+            }
+        }
         Spacer(Modifier.size(8.dp))
 
         // プレビュー

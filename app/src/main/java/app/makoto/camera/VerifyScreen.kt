@@ -26,6 +26,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -58,6 +60,15 @@ import kotlinx.coroutines.withContext
 
 private class Checked(val result: VerifyResult, val preview: Bitmap?, val ownKeyId: String?)
 
+/** 署名した端末をどこまで信頼できるか */
+private enum class Trust { OWN, REGISTERED, UNREGISTERED }
+
+private fun trustOf(context: Context, c: Checked): Trust = when {
+    c.result.keyId != null && c.result.keyId == c.ownKeyId -> Trust.OWN
+    TrustStore.nameFor(context, c.result.keyId) != null -> Trust.REGISTERED
+    else -> Trust.UNREGISTERED
+}
+
 private fun inspect(context: Context, uri: Uri): Checked {
     val file = context.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
 
@@ -85,29 +96,31 @@ private fun inspect(context: Context, uri: Uri): Checked {
         BitmapFactory.decodeByteArray(file, 0, file.size, BitmapFactory.Options().apply { inSampleSize = sample })
     } catch (e: Throwable) { null }
 
-    val result = Verifier.verify(file, analyzer, { RecordStore.load(context, it) }, { Base64.decode(it, Base64.DEFAULT) })
-    val own = try { sha256(DeviceKey.publicKey()).copyOf(8).toHex() } catch (e: Exception) { null }
-    return Checked(result, preview, own)
+    val result = Verifier.verify(file, analyzer, { RecordStore.load(context, it) }, { Base64.decode(it, Base64.DEFAULT) }, { RecordStore.all(context) })
+    return Checked(result, preview, ownDeviceId())
 }
 
 @Composable
-fun VerifyScreen(onBack: () -> Unit) {
+fun VerifyScreen(shared: Uri?, onBack: () -> Unit, onOpenDevices: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var checked by remember { mutableStateOf<Checked?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            busy = true; error = null; checked = null
-            scope.launch {
-                val r = withContext(Dispatchers.Default) { runCatching { inspect(context.applicationContext, uri) } }
-                busy = false
-                if (r.isSuccess) checked = r.getOrNull() else error = "読み込めませんでした: " + (r.exceptionOrNull()?.message ?: "")
-            }
+    fun start(uri: Uri) {
+        busy = true; error = null; checked = null
+        scope.launch {
+            val r = withContext(Dispatchers.Default) { runCatching { inspect(context.applicationContext, uri) } }
+            busy = false
+            if (r.isSuccess) checked = r.getOrNull() else error = "読み込めませんでした: " + (r.exceptionOrNull()?.message ?: "")
         }
     }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) start(uri) }
+
+    // 他のアプリの「共有」から渡された写真は、すぐに判定する
+    LaunchedEffect(shared) { if (shared != null) start(shared) }
 
     Column(modifier = Modifier.fillMaxSize().background(Palette.Ink).systemBarsPadding()) {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -127,23 +140,37 @@ fun VerifyScreen(onBack: () -> Unit) {
                     Text("判定中", color = Palette.Text, fontSize = 14.sp)
                 }
                 error != null -> Text(error ?: "", color = Palette.Bad, fontSize = 14.sp)
-                c == null -> Text(
-                    "写真を選ぶと、このアプリで撮影されたままかどうかを調べます。\n\n" +
-                        "LINE や SNS で送った写真は再圧縮されるため、原本とは判定されません。原本を渡すときは、ファイルとして送ってください。",
-                    color = Palette.Sub, fontSize = 14.sp, lineHeight = 22.sp
-                )
-                else -> ResultView(c)
+                c == null -> {
+                    Text(
+                        "写真を選ぶと、このアプリで撮影されたままかどうかを調べます。\n\n" +
+                            "メールや LINE で届いた写真は、その写真の「共有」から「マコトカメラで判定」を選んでも調べられます。\n\n" +
+                            "LINE の通常の写真送信や SNS では再圧縮されるため、原本とは判定されません。原本を渡すときは、メールの添付などファイルとして送ってください。",
+                        color = Palette.Sub, fontSize = 14.sp, lineHeight = 22.sp
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Chip("端末の登録と、この端末の ID", onClick = onOpenDevices)
+                }
+                else -> ResultView(c, onOpenDevices)
             }
         }
     }
 }
 
 @Composable
-private fun ResultView(c: Checked) {
+private fun ResultView(c: Checked, onOpenDevices: () -> Unit) {
+    val context = LocalContext.current
+    var version by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var newName by remember { mutableStateOf("") }
+    val trust = remember(c, version) { trustOf(context, c) }
+    val trustedName = remember(c, version) { TrustStore.nameFor(context, c.result.keyId) }
     val r = c.result
     val changed = r.changed
     val (color, title, body) = when (r.verdict) {
-        Verdict.ORIGINAL -> Triple(Palette.Ok, "原本です", "このアプリで撮影されたままです。画像は 1 画素も変わっていません。")
+        Verdict.ORIGINAL -> when (trust) {
+            Trust.OWN -> Triple(Palette.Ok, "原本です", "この端末で撮影されたままです。画像は 1 画素も変わっていません。")
+            Trust.REGISTERED -> Triple(Palette.Ok, "原本です", "登録済みの端末「" + (trustedName ?: "") + "」で撮影されたままです。画像は 1 画素も変わっていません。")
+            Trust.UNREGISTERED -> Triple(Palette.Warn, "原本ですが、未登録の端末です", "撮影後に変わっていないことは確認できました。ただし、署名した端末が登録されていないため、誰の端末で撮ったものかは確認できていません。")
+        }
         Verdict.EDITED -> Triple(
             Palette.Bad, "撮影後に変更されています",
             if (changed != null && r.changedCount > 0) "署名付きの記録は本物ですが、画像が撮影時と違います。赤い部分が変わった場所です。"
@@ -156,7 +183,12 @@ private fun ResultView(c: Checked) {
                 (if (r.fromLocalCopy) "この端末に残っている控えと照合しました。" else "この端末に控えがないため、撮影時の記録は表示できません。") +
                 (if (changed != null && r.changedCount > 0) "赤い部分が変わった場所です。" else "")
         )
-        Verdict.UNKNOWN -> Triple(Palette.Sub, "確認できません", "このアプリの記録も透かしも見つかりません。他のカメラの写真か、強い加工で透かしが消えた可能性があります。")
+        Verdict.SIMILAR_LOCAL -> Triple(
+            Palette.Bad, "この端末で撮った写真を加工したものとみられます",
+            "記録も透かしも消えていますが、この端末の控えにある撮影ID " + (r.fields["shotId"] ?: "") + " の写真と構図が一致します。" +
+                (if (r.changedCount > 0) "赤い部分が元の写真と違う場所です。" else "") + "下は元の写真の記録です。"
+        )
+        Verdict.UNKNOWN -> Triple(Palette.Bad, "原本とは認められません", "このアプリの記録も透かしも見つかりません。他のカメラの写真か、加工で記録と透かしが消えた写真です。撮影時のままであることは確認できません。")
     }
 
     Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Palette.Panel)) {
@@ -186,10 +218,29 @@ private fun ResultView(c: Checked) {
         Spacer(Modifier.height(16.dp))
     }
 
-    val rows = detailRows(r, c.ownKeyId)
+    // 未登録の端末の署名なら、その場で登録できるようにする
+    val keyId = r.keyId
+    if (trust == Trust.UNREGISTERED && keyId != null && !r.fromLocalCopy && r.verdict != Verdict.FORGED_RECORD) {
+        Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Palette.Panel).padding(16.dp)) {
+            Text("この端末を登録する", color = Palette.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text("端末ID " + prettyId(keyId) + "\n相手から聞いた ID と同じであることを確かめてから登録してください。", color = Palette.Sub, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(value = newName, onValueChange = { newName = it }, label = { Text("名前(例: 田中さん)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            Row {
+                Chip("登録する", selected = true) { TrustStore.add(context, keyId, newName); newName = ""; version++ }
+                Spacer(Modifier.width(8.dp))
+                Chip("登録済みの一覧", onClick = onOpenDevices)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+    }
+
+    val rows = detailRows(r, c.ownKeyId, trustedName)
     if (rows.isNotEmpty()) {
         Column(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Palette.Panel).padding(16.dp)) {
-            Text(if (r.fromLocalCopy) "撮影時の記録(この端末の控え)" else "撮影時の記録(署名付き)", color = Palette.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(if (r.fromLocalCopy) "元の写真の記録(この端末の控え)" else "撮影時の記録(署名付き)", color = Palette.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             for ((k, v) in rows) {
                 Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -200,14 +251,14 @@ private fun ResultView(c: Checked) {
         }
         Spacer(Modifier.height(12.dp))
         Text(
-            "試作版の注意: 他の端末で署名された写真について、その鍵が正規のアプリのものかどうかまでは確認していません。" +
+            "注意: 未登録の端末の署名は、正規のアプリのものかどうかを確認できません。相手の端末ID を登録して使ってください。" +
                 "時刻は撮影した端末の時計、位置は端末の測位結果です。",
             color = Palette.Sub, fontSize = 12.sp, lineHeight = 18.sp
         )
     }
 }
 
-private fun detailRows(r: VerifyResult, ownKeyId: String?): List<Pair<String, String>> {
+private fun detailRows(r: VerifyResult, ownKeyId: String?, trustedName: String?): List<Pair<String, String>> {
     val f = r.fields
     val out = ArrayList<Pair<String, String>>()
     if (f.isEmpty()) return out
@@ -230,6 +281,13 @@ private fun detailRows(r: VerifyResult, ownKeyId: String?): List<Pair<String, St
     f["ratio"]?.let { out.add("比率" to it) }
     out.add("画面の表示" to if (f["stamp"] == "true") "あり" else "なし")
     f["shotId"]?.let { out.add("撮影ID" to it) }
-    r.keyId?.let { out.add("署名した端末" to it + if (ownKeyId != null && ownKeyId == it) "(この端末)" else "(他の端末)") }
+    r.keyId?.let {
+        val who = when {
+            ownKeyId != null && ownKeyId == it -> "この端末"
+            trustedName != null -> "登録済み: $trustedName"
+            else -> "未登録の端末"
+        }
+        out.add("署名した端末" to prettyId(it) + "($who)")
+    }
     return out
 }
