@@ -7,6 +7,9 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import app.makoto.camera.core.QrInfo
+import com.google.zxing.PlanarYUVLuminanceSource
+import java.util.concurrent.Executors
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.view.CameraController
@@ -90,6 +93,39 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
     var flash by remember { mutableStateOf("off") }
     var stamp by remember { mutableStateOf(true) }
     var ratio by remember { mutableStateOf("4:3") }
+    var qr by remember { mutableStateOf(false) }
+
+    // QR の簡易確認(カメラをかざして読む)
+    var scanning by remember { mutableStateOf(false) }
+    var scanned by remember { mutableStateOf<QrInfo?>(null) }
+    val scanExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(Unit) { onDispose { scanExecutor.shutdown() } }
+    DisposableEffect(scanning) {
+        if (scanning) {
+            controller.setEnabledUseCases(CameraController.IMAGE_CAPTURE or CameraController.IMAGE_ANALYSIS)
+            controller.setImageAnalysisAnalyzer(scanExecutor) { image ->
+                try {
+                    val plane = image.planes[0]
+                    val buf = plane.buffer
+                    val data = ByteArray(buf.remaining())
+                    buf.get(data)
+                    val width = Math.min(image.width, plane.rowStride)
+                    val height = Math.min(image.height, data.size / plane.rowStride)
+                    val text = QrCode.read(PlanarYUVLuminanceSource(data, plane.rowStride, height, 0, 0, width, height, false))
+                    QrCode.parse(text)?.let { scanned = it }
+                } catch (e: Exception) {
+                    // 読めなかったコマは無視する
+                } finally {
+                    image.close()
+                }
+            }
+        } else {
+            controller.clearImageAnalysisAnalyzer()
+            controller.setEnabledUseCases(CameraController.IMAGE_CAPTURE)
+            scanned = null
+        }
+        onDispose { controller.clearImageAnalysisAnalyzer() }
+    }
     var busy by remember { mutableStateOf(false) }
     var lastShot by remember { mutableStateOf<Uri?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -130,7 +166,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
         if (busy) return
         busy = true
         val loc = tracker.last
-        val settings = ShotSettings(stamp, front, zoomState?.zoomRatio ?: 1f, evIndex * evStep, flash, ratio)
+        val settings = ShotSettings(stamp, qr, front, zoomState?.zoomRatio ?: 1f, evIndex * evStep, flash, ratio)
         controller.takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 val buffer = image.planes[0].buffer
@@ -172,7 +208,7 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Chip(if (stamp) "表示 入" else "表示 切", selected = stamp) { stamp = !stamp }
+            Chip(if (stamp) "表示 入" else "表示 切", selected = stamp) { stamp = !stamp; if (!stamp) qr = false }
         }
 
         // 位置の状態
@@ -224,6 +260,42 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
                         )
                     }
                     for (line in Stamp.lines(now, loc)) Text(line, color = Color.White, fontSize = 11.sp)
+                    if (qr) Text("QR 付き(右下に入ります)", color = Color.White, fontSize = 11.sp)
+                }
+            }
+            if (scanning) {
+                val s = scanned
+                Column(
+                    modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(8.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).background(Color(0xE618212B)).padding(12.dp)
+                ) {
+                    if (s == null) {
+                        Text("QR の簡易確認", color = Palette.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text("マコトカメラの写真に入っている QR にかざしてください。", color = Palette.Sub, fontSize = 12.sp)
+                    } else {
+                        val own = remember { ownDeviceId() }
+                        val name = TrustStore.nameFor(context, s.keyId)
+                        val who = when {
+                            own != null && own == s.keyId -> "この端末"
+                            name != null -> "登録済み: $name"
+                            else -> "未登録の端末"
+                        }
+                        val good = s.valid && (name != null || own == s.keyId)
+                        Text(
+                            if (!s.valid) "QR の署名が合いません(偽造または破損)" else if (good) "署名を確認しました" else "署名は正しいですが、未登録の端末です",
+                            color = if (!s.valid) Palette.Bad else if (good) Palette.Ok else Palette.Warn, fontSize = 14.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        if (s.valid) {
+                            Text("撮影日時  " + s.timeJst.replace("T", " ").replace("+09:00", "") + "(日本時間)", color = Palette.Text, fontSize = 12.sp)
+                            val la = s.lat
+                            val lo = s.lon
+                            Text("場所  " + (if (la != null && lo != null) Format.latLon(la, lo) else "記録なし"), color = Palette.Text, fontSize = 12.sp)
+                            s.alt?.let { Text(String.format(Locale.US, "標高  %.1f m", it), color = Palette.Text, fontSize = 12.sp) }
+                            Text("端末  " + prettyId(s.keyId) + "($who)", color = Palette.Text, fontSize = 12.sp)
+                            Text("撮影ID  " + s.shotId, color = Palette.Text, fontSize = 12.sp)
+                            Text("簡易確認です。QR は複製できるため、写真が原本かどうかはファイルを「写真を判定」で確認してください。", color = Palette.Sub, fontSize = 11.sp, lineHeight = 16.sp)
+                        }
+                    }
                 }
             }
             if (busy) {
@@ -237,6 +309,14 @@ fun CameraScreen(locationOk: Boolean, onOpenVerify: () -> Unit) {
                 }
             }
           }
+        }
+
+        // 写真に入れる表示と QR
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("QR", color = Palette.Sub, fontSize = 12.sp, modifier = Modifier.width(48.dp))
+            Chip(if (qr) "写真に入れる 入" else "写真に入れる 切", selected = qr, enabled = !busy) { qr = !qr; if (qr) stamp = true }
+            Spacer(Modifier.width(8.dp))
+            Chip(if (scanning) "簡易確認 中(押すと終了)" else "かざして簡易確認", selected = scanning) { scanning = !scanning }
         }
 
         // 比率

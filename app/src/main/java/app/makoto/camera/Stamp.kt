@@ -45,14 +45,18 @@ object Stamp {
         return out
     }
 
-    fun draw(bitmap: Bitmap, timeMs: Long, loc: Location?) {
+    /** @param qrText QR に入れる文字列。null なら QR なし */
+    fun draw(bitmap: Bitmap, timeMs: Long, loc: Location?, qrText: String? = null) {
         val c = Canvas(bitmap)
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         val u = Math.min(w, h) / 36f              // 基準の文字サイズ
         val pad = u * 0.8f
         val ls = lines(timeMs, loc)
-        val bandH = pad * 2 + u * 1.35f * (ls.size + 1)
+        // QR を入れるときは、読み取れる大きさ(短辺の 22%)を確保するため帯を高くする
+        val qr = qrText?.let { try { QrCode.matrix(it) } catch (e: Exception) { null } }
+        val qrSide = if (qr != null) Math.min(w, h) * 0.22f else 0f
+        val bandH = Math.max(pad * 2 + u * 1.35f * (ls.size + 1), if (qr != null) qrSide + pad * 2 else 0f)
 
         val band = Paint().apply { color = 0x990E141B.toInt() }
         c.drawRect(0f, h - bandH, w, h, band)
@@ -76,6 +80,21 @@ object Stamp {
         for (line in ls) {
             y += u * 1.35f
             c.drawText(line, pad, y, text)
+        }
+
+        if (qr != null) {
+            // 白地(余白 4 マス分)の上に黒いマスを描く
+            val n = qr.width
+            val cell = qrSide / (n + 8)
+            val left = w - pad - qrSide
+            val top = h - bandH + (bandH - qrSide) / 2f
+            c.drawRect(left, top, left + qrSide, top + qrSide, Paint().apply { color = 0xFFFFFFFF.toInt() })
+            val black = Paint().apply { color = 0xFF000000.toInt() }
+            for (qy in 0 until n) for (qx in 0 until n) if (qr.get(qx, qy)) {
+                val x0 = left + (qx + 4) * cell
+                val y0 = top + (qy + 4) * cell
+                c.drawRect(x0, y0, x0 + cell + 0.5f, y0 + cell + 0.5f, black)
+            }
         }
     }
 

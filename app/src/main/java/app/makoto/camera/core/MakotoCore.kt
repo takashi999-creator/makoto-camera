@@ -537,3 +537,51 @@ object Verifier {
         return VerifyResult(Verdict.UNKNOWN, emptyMap(), null, wm, null, false)
     }
 }
+
+// ---------------------------------------------------------------- 見える QR(簡易確認用)
+
+/** QR から読み取った内容。valid は署名が正しいかどうか。 */
+class QrInfo(
+    val valid: Boolean,
+    val shotId: String,
+    val timeJst: String,
+    val lat: Double?,
+    val lon: Double?,
+    val alt: Double?,
+    val keyId: String
+)
+
+/**
+ * QR の中身: MK1|撮影ID|日時|緯度|経度|標高|公開鍵|署名
+ * 署名は「署名」より前の文字列全体に対するもの。QR は複製できるので、写真本体の証明には
+ * 透かしの撮影ID との一致を別に確かめること。
+ */
+object QrPayload {
+    const val PREFIX = "MK1"
+
+    fun build(shotId: String, timeJst: String, lat: Double?, lon: Double?, alt: Double?,
+              sign: (ByteArray) -> ByteArray, publicKey: ByteArray, enc: (ByteArray) -> String): String {
+        val us = java.util.Locale.US
+        val head = listOf(
+            PREFIX, shotId, timeJst,
+            lat?.let { String.format(us, "%.6f", it) } ?: "",
+            lon?.let { String.format(us, "%.6f", it) } ?: "",
+            alt?.let { String.format(us, "%.1f", it) } ?: "",
+            enc(publicKey)
+        ).joinToString("|")
+        return head + "|" + enc(sign(head.toByteArray(Charsets.UTF_8)))
+    }
+
+    /** マコトカメラの QR でなければ null。 */
+    fun parse(text: String, dec: (String) -> ByteArray): QrInfo? {
+        val p = text.split("|")
+        if (p.size != 8 || p[0] != PREFIX) return null
+        return try {
+            val pub = dec(p[6])
+            val sig = dec(p[7])
+            val head = text.substringBeforeLast("|").toByteArray(Charsets.UTF_8)
+            val rec = Record(head, sig, pub)
+            QrInfo(rec.signatureValid(), p[1], p[2], p[3].toDoubleOrNull(), p[4].toDoubleOrNull(), p[5].toDoubleOrNull(), rec.keyId)
+        } catch (e: Exception) { null }
+    }
+}

@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.makoto.camera.core.ImageAnalyzer
+import app.makoto.camera.core.QrInfo
 import app.makoto.camera.core.Spec
 import app.makoto.camera.core.Verdict
 import app.makoto.camera.core.Verifier
@@ -58,7 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private class Checked(val result: VerifyResult, val preview: Bitmap?, val ownKeyId: String?)
+private class Checked(val result: VerifyResult, val preview: Bitmap?, val ownKeyId: String?, val qr: QrInfo?)
 
 /** 署名した端末をどこまで信頼できるか */
 private enum class Trust { OWN, REGISTERED, UNREGISTERED }
@@ -97,7 +98,9 @@ private fun inspect(context: Context, uri: Uri): Checked {
     } catch (e: Throwable) { null }
 
     val result = Verifier.verify(file, analyzer, { RecordStore.load(context, it) }, { Base64.decode(it, Base64.DEFAULT) }, { RecordStore.all(context) })
-    return Checked(result, preview, ownDeviceId())
+    // 写真の中に見える QR があれば読む(縮小画像で足りる)
+    val qr = preview?.let { p -> try { QrCode.parse(QrCode.read(p)) } catch (e: Throwable) { null } }
+    return Checked(result, preview, ownDeviceId(), qr)
 }
 
 @Composable
@@ -214,6 +217,23 @@ private fun ResultView(c: Checked, onOpenDevices: () -> Unit) {
                     }
                 }
             }
+        }
+        Spacer(Modifier.height(16.dp))
+    }
+
+    // 見える QR があれば、写真本体(記録または透かし)の撮影ID と一致するか確かめる
+    val q = c.qr
+    if (q != null) {
+        val bodyId = r.fields["shotId"] ?: r.watermark?.takeIf { it.found }?.idHex
+        val (qColor, qText) = when {
+            !q.valid -> Palette.Bad to "QR の署名が合いません。QR が偽造されているか、壊れています。"
+            bodyId == null -> Palette.Bad to "写真に QR(撮影ID " + q.shotId + ")がありますが、写真本体からは撮影ID を読めません。QR が他の写真から複製された可能性があります。"
+            bodyId != q.shotId -> Palette.Bad to "QR は他の写真から複製されたものです。QR の撮影ID(" + q.shotId + ")が、写真本体の撮影ID(" + bodyId + ")と一致しません。"
+            else -> Palette.Ok to "QR の撮影ID は、写真本体の撮影ID と一致しています。"
+        }
+        Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Palette.Panel)) {
+            Box(Modifier.width(4.dp).height(64.dp).background(qColor))
+            Text(qText, color = Palette.Text, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.padding(12.dp))
         }
         Spacer(Modifier.height(16.dp))
     }

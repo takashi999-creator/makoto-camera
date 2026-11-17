@@ -12,6 +12,7 @@ import android.provider.MediaStore
 import android.util.Base64
 import androidx.exifinterface.media.ExifInterface
 import app.makoto.camera.core.ImageAnalyzer
+import app.makoto.camera.core.QrPayload
 import app.makoto.camera.core.Sealer
 import app.makoto.camera.core.Spec
 import app.makoto.camera.core.WatermarkEmbedder
@@ -23,6 +24,7 @@ import java.security.SecureRandom
 
 class ShotSettings(
     val stamp: Boolean,      // 写真に場所や時刻を表示するか
+    val qr: Boolean,         // 表示の帯に、簡易確認用の QR を入れるか
     val frontLens: Boolean,
     val zoom: Float,
     val ev: Float,           // 露出補正(EV)
@@ -55,7 +57,13 @@ object PhotoPipeline {
         val h = bmp.height
 
         // 2. 表示(非表示にできる)
-        if (s.stamp) Stamp.draw(bmp, timeMs, loc)
+        val timeJst = Format.jst(timeMs, "yyyy-MM-dd'T'HH:mm:ss") + "+09:00"
+        if (s.stamp) {
+            val qrText = if (!s.qr) null else QrPayload.build(
+                idHex, timeJst, loc?.latitude, loc?.longitude, loc?.let { Format.altitude(it)?.first },
+                { DeviceKey.sign(it) }, DeviceKey.publicKey(), { QrCode.enc(it) })
+            Stamp.draw(bmp, timeMs, loc, qrText)
+        }
 
         // 3. 透かし。先に絵柄を調べて、ビットごとの強さを決める
         val buf = IntArray(w * STRIP)
@@ -84,7 +92,7 @@ object PhotoPipeline {
         f["appVersion"] = APP_VERSION
         f["platform"] = "android"
         f["shotId"] = idHex
-        f["timeJst"] = Format.jst(timeMs, "yyyy-MM-dd'T'HH:mm:ss") + "+09:00"
+        f["timeJst"] = timeJst
         f["timeMs"] = timeMs
         if (loc != null) {
             f["lat"] = loc.latitude
@@ -101,6 +109,7 @@ object PhotoPipeline {
         f["ev"] = s.ev
         f["flash"] = s.flash
         f["stamp"] = s.stamp
+        f["qr"] = s.stamp && s.qr
         f["ratio"] = s.ratio
         f["w"] = w
         f["h"] = h
