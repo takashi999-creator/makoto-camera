@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>マコトカメラ 写真の判定</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* 判定する人のための作業画面: 左に写真と結果、右に登録済みの端末。アプリと同じ紺と青の配色 */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --ink: #142231;
+  --sub: #5b6b7c;
+  --line: #d9e0e8;
+  --accent: #2f80c2;
+  --ok: #23875a;
+  --warn: #b7761a;
+  --bad: #c2413a;
+  --ok-soft: #e6f4ec;
+  --warn-soft: #fbf1e2;
+  --bad-soft: #fbeaea;
+  --drop: #eaf2fa;
+  --font-body: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Consolas", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e141b; --panel: #18212b; --ink: #e8edf2; --sub: #93a1b0; --line: #2a3644;
+    --accent: #4b9ad9; --ok: #3db37d; --warn: #e0a043; --bad: #e0645c;
+    --ok-soft: #15302a; --warn-soft: #33281a; --bad-soft: #3a1f22; --drop: #142230;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e141b; --panel: #18212b; --ink: #e8edf2; --sub: #93a1b0; --line: #2a3644;
+  --accent: #4b9ad9; --ok: #3db37d; --warn: #e0a043; --bad: #e0645c;
+  --ok-soft: #15302a; --warn-soft: #33281a; --bad-soft: #3a1f22; --drop: #142230;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.7; }
+h1, h2, h3 { margin: 0; line-height: 1.35; text-wrap: balance; }
+button, input { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible, label.drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+
+header { display: flex; align-items: center; gap: 14px; padding: 18px max(16px, 3vw); border-bottom: 1px solid var(--line); background: var(--panel); }
+header svg { flex: none; }
+header h1 { font-size: 19px; font-weight: 700; }
+header p { margin: 0; font-size: 13px; color: var(--sub); }
+.local { margin-left: auto; font-size: 12px; color: var(--sub); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; white-space: nowrap; }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; padding: 24px max(16px, 3vw); align-items: start; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } .local { display: none; } }
+.col { display: grid; gap: 16px; min-width: 0; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+.panel h2 { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+.note { font-size: 13px; color: var(--sub); }
+
+label.drop { display: grid; gap: 6px; place-items: center; text-align: center; padding: 34px 20px; border: 2px dashed var(--line); border-radius: 10px; background: var(--drop); cursor: pointer; transition: border-color .15s; }
+label.drop.over { border-color: var(--accent); }
+label.drop strong { font-size: 17px; }
+label.drop span { font-size: 13px; color: var(--sub); }
+label.drop span.btn { font-size: 14px; color: #fff; }
+label.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.btn { display: inline-block; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; padding: 7px 16px; font-size: 14px; font-weight: 500; cursor: pointer; }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+.btn.small { padding: 3px 10px; font-size: 12px; }
+
+/* 判定結果 */
+.result { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.result .stripe { height: 5px; background: var(--sub); }
+.result[data-tone="ok"] .stripe { background: var(--ok); }
+.result[data-tone="warn"] .stripe { background: var(--warn); }
+.result[data-tone="bad"] .stripe { background: var(--bad); }
+.result .head { padding: 16px 18px 6px; display: grid; gap: 6px; }
+.result .file { font-size: 12px; color: var(--sub); display: flex; gap: 12px; flex-wrap: wrap; }
+.verdict { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.verdict h3 { font-size: 20px; font-weight: 700; }
+.pill { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.neutral { background: var(--bg); color: var(--sub); }
+.result .body { margin: 0; color: var(--sub); font-size: 14px; max-width: 70ch; }
+.result .grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; padding: 12px 18px 18px; }
+@media (max-width: 700px) { .result .grid { grid-template-columns: 1fr; } }
+.shot { position: relative; border-radius: 8px; overflow: hidden; background: #000; align-self: start; }
+.shot img { display: block; width: 100%; height: auto; }
+.shot canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.legend { font-size: 12px; color: var(--sub); margin-top: 6px; }
+table.details { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.details th { text-align: left; font-weight: 500; color: var(--sub); padding: 6px 12px 6px 0; vertical-align: top; white-space: nowrap; width: 7.5em; }
+table.details td { padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+table.details tr:last-child td { border-bottom: 0; }
+.details-title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.notice { margin: 0 18px 14px; padding: 10px 14px; border-radius: 8px; font-size: 13px; border-left: 4px solid var(--sub); background: var(--bg); }
+.notice.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+.notice.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+.register { margin: 0 18px 18px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 8px; }
+.register .row { display: flex; gap: 8px; flex-wrap: wrap; }
+input[type="text"] { border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 7px 10px; min-width: 0; flex: 1 1 160px; }
+.busy { padding: 18px; color: var(--sub); font-size: 14px; }
+
+/* 登録済みの端末 */
+.devices { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.devices li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.devices li:last-child { border-bottom: 0; }
+.devices .who { display: grid; min-width: 0; }
+.devices .who span { font-size: 12px; color: var(--sub); }
+.devices button { margin-left: auto; }
+form.add { display: grid; gap: 8px; margin-top: 12px; }
+.msg { font-size: 12px; color: var(--sub); min-height: 1.2em; }
+ol.how { margin: 0; padding-left: 1.3em; font-size: 13px; color: var(--sub); display: grid; gap: 4px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <svg width="34" height="38" viewBox="0 0 34 38" aria-hidden="true">
+    <path d="M17 1 L33 6.5 V19 C33 28 26 34 17 37 C8 34 1 28 1 19 V6.5 Z" fill="var(--accent)"/>
+    <path d="M10 19.5 L15 24.5 L24.5 13.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div>
+    <h1>マコトカメラ 写真の判定</h1>
+    <p>マコトカメラで撮影されたままかどうかを、PC で確かめます</p>
+  </div>
+  <span class="local">写真はこの PC の外に送りません</span>
+</header>
+
+<main>
+  <section class="col" aria-label="写真の判定">
+    <label class="drop" id="drop">
+      <strong>写真をここにドロップ</strong>
+      <span>またはクリックして選ぶ(複数可)。メールの添付を保存したファイルをそのまま使ってください。</span>
+      <span class="btn">写真を選ぶ</span>
+      <input type="file" id="file" accept="image/jpeg,image/*" multiple>
+    </label>
+    <div id="results" class="col"></div>
+  </section>
+
+  <aside class="col" aria-label="登録済みの端末">
+    <div class="panel">
+      <h2>登録済みの端末</h2>
+      <p class="note" style="margin:0">登録した端末で撮った写真だけが「登録済み」と表示されます。相手のアプリの「端末の登録」画面にある 16 桁の ID を登録してください。</p>
+      <ul class="devices" id="devices"></ul>
+      <form class="add" id="addForm">
+        <input type="text" id="addName" placeholder="名前(例: 田中さん)" autocomplete="off">
+        <input type="text" id="addId" placeholder="端末ID(16 桁)" class="mono" autocomplete="off">
+        <div><button class="btn" type="submit">登録する</button></div>
+        <div class="msg" id="addMsg"></div>
+      </form>
+      <p class="note" style="margin:8px 0 0">登録はこのブラウザの中だけに保存されます。別の PC やブラウザでは、もう一度登録してください。</p>
+    </div>
+    <div class="panel">
+      <h2>判定のしかた</h2>
+      <ol class="how">
+        <li>写真をメールの添付などファイルのまま受け取り、PC に保存する</li>
+        <li>このページに写真をドロップする</li>
+        <li>「原本です」と出れば、撮影されたままです。初めての相手は端末を登録する</li>
+      </ol>
+      <p class="note" style="margin:10px 0 0">LINE の通常の写真送信や SNS を通った写真は再圧縮されるため、原本とは判定されません。スマホの中にだけある控えとの照合(元写真の検索)は、PC 版ではできません。</p>
+    </div>
+  </aside>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+"use strict";
+// ============================================================
+// マコトカメラ 共通仕様 v1(Android 版 MakotoCore.kt と同じ計算)
+// ============================================================
+const G = 64, ID_BYTES = 6, BITS = 64, CLIP = 6.0, MIN_STRENGTH = 0.5, MAP = 32, MAP_T = 8;
+const MAGIC = [0x4D, 0x41, 0x4B, 0x4F, 0x54, 0x4F, 0x31, 0x00];
+
+const hex = (b) => Array.from(b, (v) => v.toString(16).padStart(2, "0")).join("");
+const sha256 = async (b) => new Uint8Array(await crypto.subtle.digest("SHA-256", b));
+const pretty = (id) => (id || "").match(/.{1,4}/g)?.join(" ") || "";
+
+function crc16(b) {
+  let c = 0xFFFF;
+  for (const x of b) { c ^= x << 8; for (let i = 0; i < 8; i++) { c = (c & 0x8000) ? ((c << 1) ^ 0x1021) : (c << 1); c &= 0xFFFF; } }
+  return c;
+}
+const cellBit = (i) => ((i % G) * 37 + Math.floor(i / G) * 21) % BITS;
+const cellSign = (i) => (((Math.imul(i, 1103515245) + 12345) | 0) >>> 16 & 1) ? 1 : -1;
+
+function axis(n) {
+  const cells = new Int32Array(n), wave = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const u = (i + 0.5) * G / n;
+    let c = Math.floor(u); if (c >= G) c = G - 1;
+    cells[i] = c; wave[i] = Math.sin(2 * Math.PI * (u - c));
+  }
+  return { cells, wave };
+}
+
+/** 全画素から、透かしの推定値と 32x32 の平均輝度を求める(RGBA の画素列) */
+function analyze(d, w, h) {
+  const ax = axis(w), ay = axis(h);
+  const acc = new Float64Array(G * G), norm = new Float64Array(G * G);
+  const mapSum = new Float64Array(MAP * MAP), mapCnt = new Float64Array(MAP * MAP);
+  const mx = new Int32Array(w);
+  for (let x = 0; x < w; x++) mx[x] = Math.min(MAP - 1, Math.floor(x * MAP / w));
+  for (let y = 0; y < h; y++) {
+    const rowCell = ay.cells[y] * G, wy = ay.wave[y];
+    const mrow = Math.min(MAP - 1, Math.floor(y * MAP / h)) * MAP;
+    let p = y * w * 4;
+    for (let x = 0; x < w; x++, p += 4) {
+      const l = (77 * d[p] + 150 * d[p + 1] + 29 * d[p + 2]) >> 8;
+      const k = Math.fround(ax.wave[x] * wy);
+      const i = rowCell + ax.cells[x];
+      acc[i] += Math.fround(l * k);
+      norm[i] += Math.fround(k * k);
+      const m = mrow + mx[x];
+      mapSum[m] += l; mapCnt[m]++;
+    }
+  }
+  // 透かし
+  const vote = new Float64Array(BITS);
+  for (let i = 0; i < G * G; i++) {
+    if (!(norm[i] > 0)) continue;
+    let e = acc[i] / norm[i];
+    if (e > CLIP) e = CLIP; else if (e < -CLIP) e = -CLIP;
+    vote[cellBit(i)] += cellSign(i) * e;
+  }
+  const reps = G * G / BITS, bytes = new Uint8Array(ID_BYTES + 2);
+  let strength = 0;
+  for (let k = 0; k < BITS; k++) {
+    if (vote[k] > 0) bytes[k >> 3] |= 1 << (7 - (k & 7));
+    strength += Math.abs(vote[k]) / reps;
+  }
+  strength /= BITS;
+  const crc = (bytes[ID_BYTES] << 8) | bytes[ID_BYTES + 1];
+  const wm = { found: crc === crc16(bytes.subarray(0, ID_BYTES)) && strength >= MIN_STRENGTH, idHex: hex(bytes.subarray(0, ID_BYTES)), strength };
+  const map = new Uint8Array(MAP * MAP);
+  for (let i = 0; i < map.length; i++) map[i] = mapCnt[i] ? Math.floor(mapSum[i] / mapCnt[i]) : 0;
+  return { wm, map };
+}
+
+/** ハッシュ対象(記録セグメントと Exif(APP1) を除いたファイル)と、記録の中身。JPEG でなければ null */
+function splitJpeg(f) {
+  if (f.length < 4 || f[0] !== 0xFF || f[1] !== 0xD8) return null;
+  const parts = [f.subarray(0, 2)];
+  let payload = null, o = 2;
+  while (o + 4 <= f.length) {
+    if (f[o] !== 0xFF) break;
+    const marker = f[o + 1];
+    if (marker === 0xDA || marker === 0xD9) break;
+    const len = (f[o + 2] << 8) | f[o + 3];
+    if (len < 2 || o + 2 + len > f.length) break;
+    const ours = marker === 0xEB && len - 2 >= MAGIC.length && MAGIC.every((v, i) => f[o + 4 + i] === v);
+    if (ours && !payload) payload = f.slice(o + 4, o + 2 + len);
+    else if (marker !== 0xE1) parts.push(f.subarray(o, o + 2 + len));
+    o += 2 + len;
+  }
+  parts.push(f.subarray(o));
+  const total = parts.reduce((s, p) => s + p.length, 0), out = new Uint8Array(total);
+  let q = 0; for (const p of parts) { out.set(p, q); q += p.length; }
+  return { hashable: out, payload };
+}
+
+function unpackRecord(p) {
+  try {
+    let o = MAGIC.length;
+    const u = (n) => { let v = 0; for (let i = 0; i < n; i++) v = (v * 256) + p[o++]; return v; };
+    const ml = u(4); if (o + ml > p.length) return null;
+    const manifest = p.slice(o, o + ml); o += ml;
+    const sl = u(2); if (o + sl > p.length) return null;
+    const sig = p.slice(o, o + sl); o += sl;
+    const kl = u(2); if (o + kl > p.length) return null;
+    return { manifest, sig, pub: p.slice(o, o + kl) };
+  } catch (e) { return null; }
+}
+
+/** DER 形式の署名を 64 バイト(r||s)に */
+function derToRaw(der) {
+  let o = 2;
+  if (der[1] & 0x80) o += der[1] & 0x7F;
+  const int = () => {
+    if (der[o] !== 2) throw new Error("bad der");
+    const len = der[o + 1];
+    let v = der.slice(o + 2, o + 2 + len); o += 2 + len;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    const out = new Uint8Array(32); out.set(v, 32 - v.length); return out;
+  };
+  const r = int(), s = int(), raw = new Uint8Array(64);
+  raw.set(r, 0); raw.set(s, 32); return raw;
+}
+
+/** P-256 の圧縮公開鍵(33 バイト)を 65 バイトに */
+function decompress(c) {
+  const P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFFn;
+  const B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604Bn;
+  const big = (b) => BigInt("0x" + hex(b));
+  const mod = (a) => ((a % P) + P) % P;
+  const pow = (b, e) => { let r = 1n; b = mod(b); while (e > 0n) { if (e & 1n) r = r * b % P; b = b * b % P; e >>= 1n; } return r; };
+  const x = big(c.subarray(1));
+  const rhs = mod(x * x * x - 3n * x + B);
+  let y = pow(rhs, (P + 1n) >> 2n);
+  if (y * y % P !== rhs) throw new Error("not on curve");
+  if (((y & 1n) === 1n) !== (c[0] === 3)) y = P - y;
+  const fix = (v) => { const h = v.toString(16).padStart(64, "0"); return Uint8Array.from(h.match(/../g), (s) => parseInt(s, 16)); };
+  const out = new Uint8Array(65); out[0] = 4; out.set(fix(x), 1); out.set(fix(y), 33); return out;
+}
+
+async function verifySig(pub65, rawSig, data) {
+  try {
+    const key = await crypto.subtle.importKey("raw", pub65, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    return await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, rawSig, data);
+  } catch (e) { return false; }
+}
+const keyIdOf = async (pub65) => hex((await sha256(pub65)).subarray(0, 8));
+
+function readFields(manifest) {
+  try {
+    const o = JSON.parse(new TextDecoder().decode(manifest)), out = {};
+    for (const [k, v] of Object.entries(o)) if (v !== null && v !== undefined) out[k] = String(v);
+    return out;
+  } catch (e) { return {}; }
+}
+
+function originalMap(fields) {
+  try {
+    const s = atob(fields.map || "");
+    if (s.length !== MAP * MAP) return null;
+    return Uint8Array.from(s, (ch) => ch.charCodeAt(0));
+  } catch (e) { return null; }
+}
+
+const b64url = (s) => {
+  let t = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (t.length % 4) t += "=";
+  return Uint8Array.from(atob(t), (ch) => ch.charCodeAt(0));
+};
+const jst = (ms) => new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 19) + "+09:00";
+
+/** 見える QR の中身(MK2 / MK1)。マコトカメラの QR でなければ null */
+async function parseQr(text) {
+  const p = text.split("|");
+  if (p.length !== 8) return null;
+  const head = new TextEncoder().encode(text.slice(0, text.lastIndexOf("|")));
+  try {
+    let pub, raw, shotId, time;
+    if (p[0] === "MK2") {
+      pub = decompress(b64url(p[6])); raw = b64url(p[7]);
+      shotId = hex(b64url(p[1])); time = jst(parseInt(p[2], 36) * 1000);
+    } else if (p[0] === "MK1") {
+      pub = b64url(p[6]); raw = derToRaw(b64url(p[7])); shotId = p[1]; time = p[2];
+    } else return null;
+    const num = (s) => (s === "" ? null : Number(s));
+    return { valid: await verifySig(pub, raw, head), shotId, time, lat: num(p[3]), lon: num(p[4]), alt: num(p[5]), keyId: await keyIdOf(pub) };
+  } catch (e) { return null; }
+}
+
+/** Android 版の Verifier.verify と同じ判定(この PC には撮影端末の控えがないので、控えとの照合はしない) */
+async function verifyFile(file, an) {
+  const parts = splitJpeg(file);
+  const rec = parts && parts.payload ? unpackRecord(parts.payload) : null;
+  if (rec) {
+    let ok = false;
+    try { ok = rec.pub.length === 65 && await verifySig(rec.pub, derToRaw(rec.sig), rec.manifest); } catch (e) { ok = false; }
+    const keyId = await keyIdOf(rec.pub);
+    if (!ok) return { verdict: "FORGED_RECORD", fields: {}, keyId, wm: an && an.wm, changed: null };
+    const fields = readFields(rec.manifest);
+    if (fields.imageHash === hex(await sha256(parts.hashable))) return { verdict: "ORIGINAL", fields, keyId, wm: an && an.wm, changed: null };
+    const orig = originalMap(fields);
+    const changed = orig && an ? Array.from(orig, (v, i) => Math.abs(v - an.map[i]) >= MAP_T) : null;
+    return { verdict: "EDITED", fields, keyId, wm: an && an.wm, changed };
+  }
+  if (an && an.wm.found) return { verdict: "WATERMARK_ONLY", fields: {}, keyId: null, wm: an.wm, changed: null };
+  return { verdict: "UNKNOWN", fields: {}, keyId: null, wm: an && an.wm, changed: null };
+}
+
+// ============================================================
+// 画像の読み込み
+// ============================================================
+async function decodePixels(blob) {
+  // Android と同じく、Exif の向きや色の変換をかけずに画素を読む
+  let bmp;
+  try { bmp = await createImageBitmap(blob, { imageOrientation: "none", colorSpaceConversion: "none" }); }
+  catch (e) { bmp = await createImageBitmap(blob); }
+  const w = bmp.width, h = bmp.height;
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0);
+  if (bmp.close) bmp.close();
+  return { w, h, data: ctx.getImageData(0, 0, w, h).data, canvas: cv };
+}
+
+/** QR は下端の帯の右側にあるので、まずその周辺を元の解像度で、だめなら全体を縮小して探す */
+function findQrText(px) {
+  if (typeof jsQR !== "function") return null;
+  const { w, h, canvas } = px;
+  const tryRegion = (x0, y0, rw, rh, scale) => {
+    const tw = Math.max(1, Math.round(rw * scale)), th = Math.max(1, Math.round(rh * scale));
+    const c = document.createElement("canvas"); c.width = tw; c.height = th;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(canvas, x0, y0, rw, rh, 0, 0, tw, th);
+    const r = jsQR(ctx.getImageData(0, 0, tw, th).data, tw, th, { inversionAttempts: "dontInvert" });
+    return r ? r.data : null;
+  };
+  const x0 = Math.floor(w * 0.4), y0 = Math.floor(h * 0.5);
+  return tryRegion(x0, y0, w - x0, h - y0, Math.min(1, 1600 / Math.max(w - x0, h - y0)))
+      || tryRegion(0, 0, w, h, Math.min(1, 1600 / Math.max(w, h)));
+}
+
+// ============================================================
+// 登録済みの端末(このブラウザだけに保存)
+// ============================================================
+const STORE_KEY = "makoto_trusted_devices";
+function loadTrusted() { try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; } catch (e) { return memTrusted; } }
+let memTrusted = {};
+function saveTrusted(m) { memTrusted = m; try { localStorage.setItem(STORE_KEY, JSON.stringify(m)); } catch (e) { /* 保存できない環境では、このページを開いている間だけ覚える */ } }
+const normalizeId = (s) => { const t = (s.split(":").pop() || "").trim().toLowerCase().replace(/[\s-]/g, ""); return /^[0-9a-f]{16}$/.test(t) ? t : null; };
+const trustedName = (id) => (id ? loadTrusted()[id] || null : null);
+
+function renderDevices() {
+  const list = document.getElementById("devices"), m = loadTrusted();
+  const ids = Object.keys(m).sort((a, b) => m[a].localeCompare(m[b], "ja"));
+  list.replaceChildren();
+  if (!ids.length) { const li = document.createElement("li"); li.innerHTML = '<span class="note">まだありません</span>'; list.append(li); return; }
+  for (const id of ids) {
+    const li = document.createElement("li");
+    li.innerHTML = `<div class="who"><strong></strong><span class="mono"></span></div><button class="btn ghost small" type="button">削除</button>`;
+    li.querySelector("strong").textContent = m[id];
+    li.querySelector(".mono").textContent = pretty(id);
+    li.querySelector("button").addEventListener("click", () => { const n = loadTrusted(); delete n[id]; saveTrusted(n); renderDevices(); refreshAll(); });
+    list.append(li);
+  }
+}
+function addTrusted(id, name) { const m = loadTrusted(); m[id] = (name || "").trim() || "名前なし"; saveTrusted(m); renderDevices(); refreshAll(); }
+
+document.getElementById("addForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = normalizeId(document.getElementById("addId").value), msg = document.getElementById("addMsg");
+  if (!id) { msg.textContent = "端末ID は 16 桁の英数字(0-9, a-f)です。"; return; }
+  addTrusted(id, document.getElementById("addName").value);
+  document.getElementById("addId").value = ""; document.getElementById("addName").value = "";
+  msg.textContent = "登録しました。";
+});
+
+// ============================================================
+// 結果の表示
+// ============================================================
+const checked = []; // { el, name, size, result, qr, url }
+const fmt1 = (s, d) => (s == null || s === "" || isNaN(Number(s)) ? null : Number(s).toFixed(d));
+const latLon = (lat, lon) => `${lat >= 0 ? "北緯" : "南緯"} ${Math.abs(lat).toFixed(6)}°  ${lon >= 0 ? "東経" : "西経"} ${Math.abs(lon).toFixed(6)}°`;
+
+function summary(r) {
+  const name = trustedName(r.keyId);
+  switch (r.verdict) {
+    case "ORIGINAL":
+      return name
+        ? { tone: "ok", pill: ["ok", "原本"], title: "原本です", body: `登録済みの端末「${name}」で撮影されたままです。画像は 1 画素も変わっていません。` }
+        : { tone: "warn", pill: ["warn", "未登録の端末"], title: "原本ですが、未登録の端末です", body: "撮影後に変わっていないことは確認できました。ただし、署名した端末が登録されていないため、誰の端末で撮ったものかは確認できていません。" };
+    case "EDITED":
+      return { tone: "bad", pill: ["bad", "変更あり"], title: "撮影後に変更されています",
+        body: r.changed && r.changed.some(Boolean) ? "署名付きの記録は本物ですが、画像が撮影時と違います。写真の赤い部分が変わった場所です。" : "署名付きの記録は本物ですが、画像が撮影時と違います。見た目の変化は小さく、再保存や再圧縮の可能性があります。" };
+    case "FORGED_RECORD":
+      return { tone: "bad", pill: ["bad", "偽造"], title: "記録が壊れているか、偽造されています", body: "記録はありますが、署名が合いません。" };
+    case "WATERMARK_ONLY":
+      return { tone: "warn", pill: ["warn", "原本ではない"], title: "マコトカメラの写真ですが、原本ではありません",
+        body: `透かしから撮影ID ${r.wm.idHex} を読み取りました。再保存、SNS や LINE での送信、編集のいずれかを経ています。撮影時の記録はこの写真に残っていません。撮影した人のスマホで判定すると、控えと照合できます。` };
+    default:
+      return { tone: "bad", pill: ["bad", "確認できない"], title: "原本とは認められません", body: "マコトカメラの記録も透かしも見つかりません。他のカメラの写真か、加工で記録と透かしが消えた写真です。撮影時のままであることは確認できません。" };
+  }
+}
+
+function detailRows(r) {
+  const f = r.fields, out = [];
+  if (!Object.keys(f).length) return out;
+  if (f.timeJst) out.push(["撮影日時", f.timeJst.replace("T", " ").replace("+09:00", "") + "(日本時間)"]);
+  if (f.lat != null && f.lon != null) out.push(["場所", latLon(Number(f.lat), Number(f.lon)) + (fmt1(f.acc, 0) ? `(誤差 約${fmt1(f.acc, 0)} m)` : "")]);
+  else out.push(["場所", "記録なし"]);
+  if (fmt1(f.alt, 1)) out.push(["標高", `${fmt1(f.alt, 1)} m` + (f.altType === "ellipsoid" ? "(楕円体高)" : "")]);
+  if (f.mock === "true") out.push(["位置の偽装", "疑似位置情報が使われていました"]);
+  if (f.device) out.push(["機種", f.device + (f.os ? " / " + f.os : "")]);
+  if (f.app) out.push(["アプリ", `${f.app} ${f.appVersion || ""}`]);
+  const lens = f.lens === "front" ? "内カメラ" : "外カメラ";
+  const flash = f.flash === "auto" ? "自動" : f.flash === "on" ? "入" : "切";
+  out.push(["撮影設定", `${lens} / ズーム ${fmt1(f.zoom, 1) ? fmt1(f.zoom, 1) + "x" : "-"} / 明るさ ${f.ev != null && !isNaN(Number(f.ev)) ? (Number(f.ev) >= 0 ? "+" : "") + Number(f.ev).toFixed(1) : "-"} / フラッシュ ${flash}`]);
+  if (f.ratio) out.push(["比率", f.ratio]);
+  out.push(["画面の表示", f.stamp === "true" ? (f.qr === "true" ? "あり(QR 付き)" : "あり") : "なし"]);
+  if (f.shotId) out.push(["撮影ID", f.shotId, true]);
+  if (r.keyId) { const n = trustedName(r.keyId); out.push(["署名した端末", `${pretty(r.keyId)}(${n ? "登録済み: " + n : "未登録の端末"})`, true]); }
+  return out;
+}
+
+function qrNotice(c) {
+  const q = c.qr; if (!q) return null;
+  const r = c.result;
+  const bodyId = r.fields.shotId || (r.wm && r.wm.found ? r.wm.idHex : null);
+  if (!q.valid) return ["bad", "QR の署名が合いません。QR が偽造されているか、壊れています。"];
+  if (!bodyId) return ["bad", `写真に QR(撮影ID ${q.shotId})がありますが、写真本体からは撮影ID を読めません。QR が他の写真から複製された可能性があります。`];
+  if (bodyId !== q.shotId) return ["bad", `QR は他の写真から複製されたものです。QR の撮影ID(${q.shotId})が、写真本体の撮影ID(${bodyId})と一致しません。`];
+  return ["ok", "QR の撮影ID は、写真本体の撮影ID と一致しています。"];
+}
+
+function drawChanges(canvas, changed) {
+  const ctx = canvas.getContext("2d");
+  canvas.width = MAP * 8; canvas.height = MAP * 8;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!changed) return;
+  ctx.fillStyle = "rgba(230, 72, 77, 0.55)";
+  changed.forEach((v, i) => { if (v) ctx.fillRect((i % MAP) * 8, Math.floor(i / MAP) * 8, 8, 8); });
+}
+
+function render(c) {
+  const r = c.result, s = summary(r), el = c.el;
+  el.dataset.tone = s.tone;
+  el.dataset.verdict = r.verdict;
+  el.dataset.key = r.keyId || "";
+  el.dataset.wm = r.wm ? `${r.wm.found}/${r.wm.idHex}` : "";
+  el.dataset.changed = r.changed ? r.changed.filter(Boolean).length : 0;
+  el.dataset.qr = c.qr ? `${c.qr.valid}/${c.qr.shotId}` : "";
+  el.innerHTML = `
+    <div class="stripe"></div>
+    <div class="head">
+      <div class="file"><span class="fname"></span><span></span></div>
+      <div class="verdict"><h3></h3><span class="pill ${s.pill[0]}"></span></div>
+      <p class="body"></p>
+    </div>
+    <div class="grid">
+      <div><div class="shot"><img alt=""><canvas></canvas></div><div class="legend"></div></div>
+      <div class="info"></div>
+    </div>`;
+  el.querySelector(".fname").textContent = c.name;
+  el.querySelector(".file span:last-child").textContent = `${(c.size / 1024 / 1024).toFixed(1)} MB`;
+  el.querySelector("h3").textContent = s.title;
+  el.querySelector(".pill").textContent = s.pill[1];
+  el.querySelector(".body").textContent = s.body;
+  el.querySelector("img").src = c.url;
+  drawChanges(el.querySelector("canvas"), r.changed && r.changed.some(Boolean) ? r.changed : null);
+  if (r.changed && r.changed.some(Boolean)) el.querySelector(".legend").textContent = `赤い部分: 撮影時と違う場所(${r.changed.filter(Boolean).length} / ${MAP * MAP} マス)`;
+
+  const info = el.querySelector(".info"), rows = detailRows(r);
+  if (rows.length) {
+    const t = document.createElement("div");
+    t.innerHTML = `<div class="details-title">撮影時の記録(署名付き)</div><table class="details"><tbody></tbody></table>`;
+    for (const [k, v, mono] of rows) {
+      const tr = document.createElement("tr"), th = document.createElement("th"), td = document.createElement("td");
+      th.textContent = k; td.textContent = v; if (mono) td.className = "mono"; tr.append(th, td); t.querySelector("tbody").append(tr);
+    }
+    info.append(t);
+  } else {
+    const p = document.createElement("p"); p.className = "note"; p.style.margin = "0";
+    p.textContent = r.verdict === "FORGED_RECORD" ? "署名が合わないため、記録の内容は表示しません。" : "この写真には、撮影時の記録が残っていません。";
+    info.append(p);
+  }
+
+  const n = qrNotice(c);
+  if (n) { const d = document.createElement("div"); d.className = "notice " + n[0]; d.textContent = n[1]; el.append(d); }
+
+  if (r.keyId && !trustedName(r.keyId) && r.verdict !== "FORGED_RECORD") {
+    const box = document.createElement("form"); box.className = "register";
+    box.innerHTML = `<strong style="font-size:14px">この端末を登録する</strong>
+      <span class="note">端末ID <span class="mono"></span>。相手から聞いた ID と同じであることを確かめてから登録してください。</span>
+      <div class="row"><input type="text" placeholder="名前(例: 田中さん)" autocomplete="off"><button class="btn" type="submit">登録する</button></div>`;
+    box.querySelector(".note .mono").textContent = pretty(r.keyId);
+    box.querySelector("input").id = "reg-" + Math.random().toString(36).slice(2);
+    box.addEventListener("submit", (e) => { e.preventDefault(); addTrusted(r.keyId, box.querySelector("input").value); });
+    el.append(box);
+  }
+}
+const refreshAll = () => checked.forEach(render);
+
+async function check(fileObj) {
+  const el = document.createElement("article"); el.className = "result"; el.dataset.state = "busy";
+  el.innerHTML = `<div class="stripe"></div><div class="busy"></div>`;
+  el.querySelector(".busy").textContent = `${fileObj.name} を判定しています…`;
+  document.getElementById("results").prepend(el);
+  try {
+    const bytes = new Uint8Array(await fileObj.arrayBuffer());
+    let an = null, qrText = null;
+    try {
+      const px = await decodePixels(fileObj);
+      an = analyze(px.data, px.w, px.h);
+      qrText = findQrText(px);
+    } catch (e) { an = null; }
+    const result = await verifyFile(bytes, an);
+    const qr = qrText ? await parseQr(qrText) : null;
+    const c = { el, name: fileObj.name, size: fileObj.size, result, qr, url: URL.createObjectURL(fileObj) };
+    checked.push(c);
+    render(c);
+  } catch (e) {
+    el.dataset.verdict = "ERROR";
+    el.querySelector(".busy").textContent = `${fileObj.name} を読み込めませんでした。JPEG の写真か確認してください。`;
+  }
+  el.dataset.state = "done";
+}
+
+async function handle(files) {
+  if (!window.crypto || !crypto.subtle) {
+    alertBox("このページを開いた方法では、署名を確かめられません。ファイルを直接開くか、https のページで開いてください。");
+    return;
+  }
+  for (const f of files) await check(f);
+}
+function alertBox(text) {
+  const el = document.createElement("article"); el.className = "result"; el.dataset.tone = "bad";
+  el.innerHTML = `<div class="stripe"></div><div class="busy"></div>`; el.querySelector(".busy").textContent = text;
+  document.getElementById("results").prepend(el);
+}
+
+const drop = document.getElementById("drop"), input = document.getElementById("file");
+input.addEventListener("change", () => { handle(Array.from(input.files)); input.value = ""; });
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (e) => handle(Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/") || /\.jpe?g$/i.test(f.name))));
+// ページのどこに落としても、ブラウザが写真を開いてしまわないようにする
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => { if (!drop.contains(e.target)) { e.preventDefault(); handle(Array.from(e.dataTransfer.files)); } });
+
+renderDevices();
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths-ignore:
       - "ios/**"
+      - "pc/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
